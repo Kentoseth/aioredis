@@ -61,7 +61,6 @@ before_script:
 - sleep 3
 - export REDIS_VERSION="$(redis-cli INFO SERVER | sed -n 2p)"
 - echo $REDIS_VERSION
-- $REDIS_BIN/redis-sentinel redis-${REDIS_TAG}/sentinel.conf --daemonize yes
 - sleep 1
 
 script:
