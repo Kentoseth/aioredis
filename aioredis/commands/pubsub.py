@@ -12,7 +12,7 @@ class PubSubCommandsMixin:
 
     def publish(self, channel, message):
         """Post a message to channel."""
-        return self._conn.execute(b'PUBLISH', channel, message)
+        return self.execute(b'PUBLISH', channel, message)
 
     def publish_json(self, channel, obj):
         """Post a JSON-encoded message to channel."""
@@ -25,14 +25,14 @@ class PubSubCommandsMixin:
         Returns :func:`asyncio.gather()` coroutine which when done will return
         a list of :class:`~aioredis.Channel` objects.
         """
-        conn = self._conn
+        conn = self._pool_or_conn
         return wait_return_channels(
             conn.execute_pubsub(b'SUBSCRIBE', channel, *channels),
             conn.pubsub_channels)
 
     def unsubscribe(self, channel, *channels):
         """Unsubscribe from specific channels."""
-        return self._conn.execute_pubsub(b'UNSUBSCRIBE', channel, *channels)
+        return self.execute_pubsub(b'UNSUBSCRIBE', channel, *channels)
 
     def psubscribe(self, pattern, *patterns):
         """Switch connection to Pub/Sub mode and
@@ -42,30 +42,30 @@ class PubSubCommandsMixin:
         a list of subscribed :class:`~aioredis.Channel` objects with
         ``is_pattern`` property set to ``True``.
         """
-        conn = self._conn
+        conn = self._pool_or_conn
         return wait_return_channels(
             conn.execute_pubsub(b'PSUBSCRIBE', pattern, *patterns),
             conn.pubsub_patterns)
 
     def punsubscribe(self, pattern, *patterns):
         """Unsubscribe from specific patterns."""
-        return self._conn.execute_pubsub(b'PUNSUBSCRIBE', pattern, *patterns)
+        return self.execute_pubsub(b'PUNSUBSCRIBE', pattern, *patterns)
 
     def pubsub_channels(self, pattern=None):
         """Lists the currently active channels."""
         args = [b'PUBSUB', b'CHANNELS']
         if pattern is not None:
             args.append(pattern)
-        return self._conn.execute(*args)
+        return self.execute(*args)
 
     def pubsub_numsub(self, *channels):
         """Returns the number of subscribers for the specified channels."""
-        return wait_make_dict(self._conn.execute(
+        return wait_make_dict(self.execute(
             b'PUBSUB', b'NUMSUB', *channels))
 
     def pubsub_numpat(self):
         """Returns the number of subscriptions to patterns."""
-        return self._conn.execute(b'PUBSUB', b'NUMPAT')
+        return self.execute(b'PUBSUB', b'NUMPAT')
 
     @property
     def channels(self):
@@ -73,7 +73,7 @@ class PubSubCommandsMixin:
 
         See :attr:`~aioredis.RedisConnection.pubsub_channels`
         """
-        return self._conn.pubsub_channels
+        return self._pool_or_conn.pubsub_channels
 
     @property
     def patterns(self):
@@ -81,7 +81,7 @@ class PubSubCommandsMixin:
 
         See :attr:`~aioredis.RedisConnection.pubsub_patterns`
         """
-        return self._conn.pubsub_patterns
+        return self._pool_or_conn.pubsub_patterns
 
     @property
     def in_pubsub(self):
@@ -89,7 +89,7 @@ class PubSubCommandsMixin:
 
         Provides the number of subscribed channels.
         """
-        return self._conn.in_pubsub
+        return self._pool_or_conn.in_pubsub
 
 
 @asyncio.coroutine
