@@ -32,7 +32,8 @@ class PubSubCommandsMixin:
 
     def unsubscribe(self, channel, *channels):
         """Unsubscribe from specific channels."""
-        return self.execute_pubsub(b'UNSUBSCRIBE', channel, *channels)
+        conn = self._pool_or_conn
+        return conn.execute_pubsub(b'UNSUBSCRIBE', channel, *channels)
 
     def psubscribe(self, pattern, *patterns):
         """Switch connection to Pub/Sub mode and
@@ -49,7 +50,8 @@ class PubSubCommandsMixin:
 
     def punsubscribe(self, pattern, *patterns):
         """Unsubscribe from specific patterns."""
-        return self.execute_pubsub(b'PUNSUBSCRIBE', pattern, *patterns)
+        conn = self._pool_or_conn
+        return conn.execute_pubsub(b'PUNSUBSCRIBE', pattern, *patterns)
 
     def pubsub_channels(self, pattern=None):
         """Lists the currently active channels."""
