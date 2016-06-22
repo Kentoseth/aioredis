@@ -7,7 +7,7 @@ STOPWORD = 'STOP'
 
 @asyncio.coroutine
 def pubsub():
-    pool = yield from aioredis.create_pool(
+    redis = yield from aioredis.create_redis_pool(
         ('localhost', 6379),
         minsize=5, maxsize=10)
 
@@ -21,22 +21,22 @@ def pubsub():
             if msg == STOPWORD:
                 return
 
-    with (yield from pool) as redis:
-        channel, = yield from redis.subscribe('channel:1')
-        yield from reader(channel)  # wait for reader to complete
-        yield from redis.unsubscribe('channel:1')
+    # with (yield from pool) as redis:
+    channel, = yield from redis.subscribe('channel:1')
+    yield from reader(channel)  # wait for reader to complete
+    yield from redis.unsubscribe('channel:1')
 
     # Explicit redis usage
-    redis = yield from pool.acquire()
-    try:
-        channel, = yield from redis.subscribe('channel:1')
-        yield from reader(channel)  # wait for reader to complete
-        yield from redis.unsubscribe('channel:1')
-    finally:
-        pool.release(redis)
+    # redis = yield from pool.acquire()
+    # try:
+    #     channel, = yield from redis.subscribe('channel:1')
+    #     yield from reader(channel)  # wait for reader to complete
+    #     yield from redis.unsubscribe('channel:1')
+    # finally:
+    #     pool.release(redis)
 
-    pool.close()
-    yield from pool.wait_closed()    # closing all open connections
+    redis.close()
+    yield from redis.wait_closed()    # closing all open connections
 
 
 def main():
