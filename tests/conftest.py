@@ -15,6 +15,12 @@ from collections import namedtuple
 import aioredis
 
 
+TCPAddress = namedtuple('TCPAddress', 'host port')
+
+RedisServer = namedtuple('RedisServer', 'name tcp_address unixsocket version')
+
+# SentinelServer = namedtuple()
+
 # Public fixtures
 
 
@@ -156,13 +162,9 @@ def _read_server_version(config):
     return tuple(map(int, part[2:].split('.')))
 
 
-@pytest.yield_fixture(scope='session')
-def start_server(request, unused_port):
+@pytest.fixture(scope='session')
+def start_server(_proc, request, unused_port):
 
-    TCPAddress = namedtuple('TCPAddress', 'host port')
-    RedisServer = namedtuple(
-        'RedisServer', 'name tcp_address unixsocket version')
-    processes = []
     servers = {}
 
     version = _read_server_version(request.config)
@@ -175,13 +177,12 @@ def start_server(request, unused_port):
         tcp_address = TCPAddress('localhost', port)
         unixsocket = '/tmp/redis.{}.sock'.format(port)
 
-        proc = subprocess.Popen([request.config.getoption('--redis-server'),
-                                 '--daemonize', 'no',
-                                 '--save', '""',
-                                 '--port', str(port),
-                                 '--unixsocket', unixsocket,
-                                 ], stdout=subprocess.PIPE)
-        processes.append(proc)
+        proc = _proc(request.config.getoption('--redis-server'),
+                     '--daemonize', 'no',
+                     '--save', '""',
+                     '--port', str(port),
+                     '--unixsocket', unixsocket,
+                     stdout=subprocess.PIPE)
         log = b''
         while b'The server is now ready to accept connections ' not in log:
             log = proc.stdout.readline()
@@ -190,17 +191,52 @@ def start_server(request, unused_port):
         servers.setdefault(name, info)
         return info
 
-    yield maker
-
-    while processes:
-        proc = processes.pop(0)
-        proc.terminate()
-        proc.wait()
+    return maker
 
 
 @pytest.yield_fixture(scope='session')
-def ssl_proxy(request, unused_port):
-    processes = []
+def start_sentinel(_proc, request, unused_port, start_server):
+    sentinels = {}
+
+    version = _read_server_version(request.config)
+
+    def maker(name, *masters):
+        key = (name,) + masters
+        if key in sentinels:
+            return sentinels[key]
+        port = unused_port()
+        tcp_address = TCPAddress('localhost', port)
+        unixsocket = '/tmp/redis-sentinel.{}.sock'.format(port)
+        config = '/tmp/redis-sentinel.{}.conf'.format(port)
+
+        with open(config, 'wt') as f:
+            print('daemonize no', file=f)
+            print('save ""', file=f)
+            print('port {}'.format(port), file=f)
+            print('unixsocket {}'.format(unixsocket), file=f)
+            for master in masters:
+                print('sentinel monitor {} 127.0.0.1 {} 2'
+                      .format(master.name, master.tcp_address.port), file=f)
+
+        proc = _proc(request.config.getoption('--redis-server'),
+                     config,
+                     '--sentinel',
+                     stdout=subprocess.PIPE)
+        log = b''
+        while b'Sentinel runid is ' not in log:
+            log = proc.stdout.readline()
+
+        info = RedisServer(name, tcp_address, unixsocket, version)
+        sentinels.setdefault(key, info)
+        return info
+    yield maker
+
+    for info in sentinels.values():
+        os.remove('/tmp/redis-sentinel.{}.conf'.format(info.tcp_address.port))
+
+
+@pytest.fixture(scope='session')
+def ssl_proxy(_proc, request, unused_port):
     by_port = {}
 
     cafile = os.path.abspath(request.config.getoption('--ssl-cafile'))
@@ -225,20 +261,28 @@ def ssl_proxy(request, unused_port):
             return by_port[unsecure_port]
 
         secure_port = unused_port()
-        proc = subprocess.Popen(['/usr/bin/socat',
-                                 'openssl-listen:{},'
-                                 'cert={},'
-                                 'verify=0,fork'
-                                 .format(secure_port, pemfile),
-                                 'tcp-connect:localhost:{}'
-                                 .format(unsecure_port)
-                                 ])
-        processes.append(proc)
+        _proc('/usr/bin/socat',
+              'openssl-listen:{},'
+              'cert={},verify=0,fork'.format(secure_port, pemfile),
+              'tcp-connect:localhost:{}'.format(unsecure_port)
+              )
         time.sleep(1)   # XXX
         by_port[unsecure_port] = secure_port, ssl_ctx
         return secure_port, ssl_ctx
 
-    yield sockat
+    return sockat
+
+
+@pytest.yield_fixture(scope='session')
+def _proc():
+    processes = []
+
+    def run(*commandline, **kwargs):
+        proc = subprocess.Popen(commandline, **kwargs)
+        processes.append(proc)
+        return proc
+
+    yield run
 
     while processes:
         proc = processes.pop(0)
