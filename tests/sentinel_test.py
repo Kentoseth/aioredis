@@ -1,29 +1,64 @@
-import asyncio
 import pytest
+import asyncio
+
 from unittest import mock
 
-import aioredis.errors
+from aioredis import (
+    ReadOnlyError,
+    ReplyError,
+    )
 
 
-"""
-This was tested using https://github.com/denverdino/redis-cluster .
+pytestmark = pytest.redis_version(2, 8, 0, reason="Sentinel v2 required")
 
-It had one local diff:
-
---- a/redis-config/config.sh
-+++ b/redis-config/config.sh
-@@ -6,2 +6,4 @@ echo $redismaster_ip
-
-+redis-cli -h $redisslave_ip -p 6379  config set slave-read-only yes
-+redis-cli -h $redismaster_ip -p 6379  config set slave-read-only yes
- redis-cli -h $redisslave_ip -p 6379 slaveof $redismaster_ip 6379
-
-"""
-
-master_name = "STUB"
 get_master_connection = mock.Mock()
 get_slave_connection = mock.Mock()
+master_name = 'mymaster'
 redis_sentinel = mock.Mock()
+
+
+@pytest.mark.run_loop
+def test_sentinel_simple(sentinel, create_redis, loop):
+    redis = yield from create_redis(sentinel.tcp_address, loop=loop)
+    info = yield from redis.role()
+    assert info.role == 'sentinel'
+
+
+@pytest.mark.run_loop
+def test_sentinel_masters(sentinel, create_sentinel):
+    redis_sentinel = yield from create_sentinel(sentinel.tcp_address)
+
+    res = yield from redis_sentinel.masters()
+    assert res == {
+        'masterA': {
+            'config-epoch': 0,
+            'down-after-milliseconds': 30000,
+            'failover-timeout': 180000,
+            'flags': 'master',
+            'info-refresh': mock.ANY,
+            'ip': '127.0.0.1',
+            'is_disconnected': False,       # XXX: mixing "_" and "-"
+            'is_master': True,
+            'is_master_down': False,
+            'is_odown': False,
+            'is_sdown': False,
+            'is_sentinel': False,
+            'is_slave': False,              # make it enum?
+            'last-ok-ping-reply': mock.ANY,
+            'last-ping-reply': mock.ANY,
+            'last-ping-sent': mock.ANY,
+            'name': 'masterA',
+            'num-other-sentinels': 0,
+            'num-slaves': 1,
+            'parallel-syncs': 1,
+            'pending-commands': 0,
+            'port': sentinel.masters['masterA'].tcp_address.port,
+            'quorum': 2,
+            'role-reported': 'master',
+            'role-reported-time': mock.ANY,
+            'runid': mock.ANY,
+            }
+        }
 
 
 @pytest.mark.xfail(reason="Not ported to pytest")
@@ -49,10 +84,10 @@ def test_sentinel_slave():
     redis = yield from get_slave_connection()
     exists = yield from redis.hexists(key, field)
     if exists:
-        with pytest.raises(aioredis.errors.ReadOnlyError):
+        with pytest.raises(ReadOnlyError):
             yield from redis.hdel(key, field)
 
-    with pytest.raises(aioredis.errors.ReadOnlyError):
+    with pytest.raises(ReadOnlyError):
         yield from redis.hset(key, field, value)
 
 
@@ -64,17 +99,17 @@ def test_sentinel_slave_fail(loop):
     redis = yield from get_slave_connection()
     exists = yield from redis.hexists(key, field)
     if exists:
-        with pytest.raises(aioredis.errors.ReadOnlyError):
+        with pytest.raises(ReadOnlyError):
             yield from redis.hdel(key, field)
 
-    with pytest.raises(aioredis.errors.ReadOnlyError):
+    with pytest.raises(ReadOnlyError):
         yield from redis.hset(key, field, value)
 
     ret = yield from sentinel_connection.sentinel_failover(master_name)
     assert ret is True
     yield from asyncio.sleep(2, loop=loop)
 
-    with pytest.raises(aioredis.errors.ReadOnlyError):
+    with pytest.raises(ReadOnlyError):
         yield from redis.hset(key, field, value)
 
     ret = yield from sentinel_connection.sentinel_failover(master_name)
@@ -86,7 +121,7 @@ def test_sentinel_slave_fail(loop):
             yield from redis.hset(key, field, value)
             yield from asyncio.sleep(1, loop=loop)
             redis = yield from get_slave_connection()
-        except aioredis.errors.ReadOnlyError:
+        except ReadOnlyError:
             break
 
 
@@ -117,7 +152,7 @@ def test_sentinel_normal_fail(loop):
             yield from redis.hset(key, field, value)
             yield from asyncio.sleep(1, loop=loop)
             redis = yield from get_slave_connection()
-        except aioredis.errors.ReadOnlyError:
+        except ReadOnlyError:
             break
 
 
@@ -144,31 +179,29 @@ def test_failover(loop):
             yield from redis.hset(key, field, value)
             yield from asyncio.sleep(1, loop=loop)
             redis = yield from get_slave_connection()
-        except aioredis.errors.ReadOnlyError:
+        except ReadOnlyError:
             break
 
 
-@pytest.mark.xfail(reason="Not ported to pytest")
 @pytest.mark.run_loop
-def test_get_master():
-    sentinel_connection = redis_sentinel.get_sentinel_connection(0)
-    func = sentinel_connection.sentinel_get_master_addr_by_name
-    master = yield from func(master_name)
+def test_get_master(sentinel, create_sentinel):
+    redis_sentinel = yield from create_sentinel(sentinel.tcp_address)
+    # sentinel_connection = redis_sentinel.get_sentinel_connection(0)
+    master = yield from redis_sentinel.master_address('masterA')
     assert isinstance(master, tuple)
     assert len(master) == 2
-    assert master[1] == 6379
+    assert master[0] == '127.0.0.1'
+    assert master[1] == sentinel.masters['masterA'].tcp_address.port
 
 
-@pytest.mark.xfail(reason="Not ported to pytest")
 @pytest.mark.run_loop
-def test_get_masters():
-    sentinel_connection = redis_sentinel.get_sentinel_connection(0)
-    master = yield from sentinel_connection.sentinel_masters()
+def test_get_master_info(sentinel, create_sentinel):
+    redis_sentinel = yield from create_sentinel(sentinel.tcp_address)
+
+    master = yield from redis_sentinel.master('masterA')
     assert isinstance(master, dict)
-    assert master_name in master
-    master = master[master_name]
     assert master['is_slave'] is False
-    assert master['name'] == master_name
+    assert master['name'] == 'masterA'
     for k in ['is_master_down', 'num-other-sentinels', 'flags', 'is_odown',
               'quorum', 'ip', 'failover-timeout', 'runid', 'info-refresh',
               'config-epoch', 'parallel-syncs', 'role-reported-time',
@@ -180,34 +213,15 @@ def test_get_masters():
         assert k in master
 
 
-@pytest.mark.xfail(reason="Not ported to pytest")
 @pytest.mark.run_loop
-def test_get_master_info():
-    sentinel_connection = redis_sentinel.get_sentinel_connection(0)
-    master = yield from sentinel_connection.sentinel_master(master_name)
-    assert isinstance(master, dict)
-    assert master['is_slave'] is False
-    assert master['name'] == master_name
-    for k in ['is_master_down', 'num-other-sentinels', 'flags', 'is_odown',
-              'quorum', 'ip', 'failover-timeout', 'runid', 'info-refresh',
-              'config-epoch', 'parallel-syncs', 'role-reported-time',
-              'is_sentinel', 'last-ok-ping-reply',
-              'last-ping-reply', 'last-ping-sent', 'is_sdown', 'is_master',
-              'name', 'pending-commands', 'down-after-milliseconds',
-              'is_slave', 'num-slaves', 'port', 'is_disconnected',
-              'role-reported']:
-        assert k in master
+def test_get_slave_info(sentinel, create_sentinel):
+    redis_sentinel = yield from create_sentinel(sentinel.tcp_address)
 
-
-@pytest.mark.xfail(reason="Not ported to pytest")
-@pytest.mark.run_loop
-def test_get_slave_info():
-    sentinel_connection = redis_sentinel.get_sentinel_connection(0)
-    slave = yield from sentinel_connection.sentinel_slaves(master_name)
-    assert len(slave) == 1
-    slave = slave[0]
-    assert isinstance(slave, dict)
-    assert slave['is_slave'] is True
+    info = yield from redis_sentinel.slaves('masterA')
+    assert len(info) == 1
+    info = info[0]
+    assert isinstance(info, dict)
+    assert info['is_slave'] is True
     for k in ['is_master_down', 'flags', 'is_odown',
               'ip', 'runid', 'info-refresh',
               'role-reported-time',
@@ -215,22 +229,25 @@ def test_get_slave_info():
               'last-ping-reply', 'last-ping-sent', 'is_sdown', 'is_master',
               'name', 'pending-commands', 'down-after-milliseconds',
               'is_slave', 'port', 'is_disconnected', 'role-reported']:
-        assert k in slave, k
+        assert k in info, k
 
 
-@pytest.mark.xfail(reason="Not ported to pytest")
 @pytest.mark.run_loop
-def test_get_sentinel_info():
-    sentinel_connection = redis_sentinel.get_sentinel_connection(0)
-    sentinel = yield from sentinel_connection.sentinel_sentinels(master_name)
+def test_get_sentinel_info(sentinel, create_sentinel):
+    redis_sentinel = yield from create_sentinel(sentinel.tcp_address)
+
+    sentinel = yield from redis_sentinel.sentinels('masterA')
     assert len(sentinel) == 0
+
+    with pytest.raises(ReplyError):
+        yield from redis_sentinel.sentinels('bad_master')
 
 
 @pytest.mark.xfail(reason="Not ported to pytest")
 @pytest.mark.run_loop
 def test_get_sentinel_set_error():
     sentinel_connection = redis_sentinel.get_sentinel_connection(0)
-    with pytest.raises(aioredis.errors.ReplyError):
+    with pytest.raises(ReplyError):
         yield from sentinel_connection.sentinel_set(master_name, 'foo', 'bar')
 
 

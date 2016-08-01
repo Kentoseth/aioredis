@@ -13,13 +13,15 @@ import logging
 from collections import namedtuple
 
 import aioredis
+import aioredis.sentinel2
 
 
 TCPAddress = namedtuple('TCPAddress', 'host port')
 
 RedisServer = namedtuple('RedisServer', 'name tcp_address unixsocket version')
 
-# SentinelServer = namedtuple()
+SentinelServer = namedtuple('SentinelServer',
+                            'name tcp_address unixsocket version masters')
 
 # Public fixtures
 
@@ -53,11 +55,12 @@ def unused_port():
 
 
 @pytest.fixture
-def create_connection(_closable):
+def create_connection(_closable, loop):
     """Wrapper around aioredis.create_connection."""
 
     @asyncio.coroutine
     def f(*args, **kw):
+        kw.setdefault('loop', loop)
         conn = yield from aioredis.create_connection(*args, **kw)
         _closable(conn)
         return conn
@@ -70,6 +73,7 @@ def create_redis(_closable, loop, request):
 
     @asyncio.coroutine
     def f(*args, **kw):
+        kw.setdefault('loop', loop)
         if request.param == 'single':
             redis = yield from aioredis.create_redis(*args, **kw)
         else:
@@ -80,14 +84,27 @@ def create_redis(_closable, loop, request):
 
 
 @pytest.fixture
-def create_pool(_closable):
+def create_pool(_closable, loop):
     """Wrapper around aioredis.create_pool."""
 
     @asyncio.coroutine
     def f(*args, **kw):
+        kw.setdefault('loop', loop)
         redis = yield from aioredis.create_pool(*args, **kw)
         _closable(redis)
         return redis
+    return f
+
+
+@pytest.fixture
+def create_sentinel(create_pool, loop):
+    """Helper instantiating RedisSentinel client."""
+
+    @asyncio.coroutine
+    def f(*args, **kw):
+        kw.setdefault('loop', loop)
+        pool = yield from create_pool(*args, **kw)
+        return aioredis.sentinel2.RedisSentinel(pool)
     return f
 
 
@@ -135,6 +152,19 @@ def serverB(start_server):
     return start_server('B')
 
 
+@pytest.fixture(scope='session')
+def sentinel(start_sentinel, start_server):
+    """Starts redis-sentinel instance with one master -- masterA."""
+    masterA = start_server('masterA', [
+        'slave-read-only yes',
+        ])
+    start_server('slaveA', [
+        'slaveof 127.0.0.1 {}'.format(masterA.tcp_address.port),
+        'slave-read-only yes',
+        ])
+    return start_sentinel('main', masterA)
+
+
 # Internal stuff #
 
 
@@ -162,27 +192,60 @@ def _read_server_version(config):
     return tuple(map(int, part[2:].split('.')))
 
 
+@contextlib.contextmanager
+def config_writer(path):
+    with open(path, 'wt') as f:
+        def write(*args):
+            print(*args, file=f)
+        yield write
+
+
 @pytest.fixture(scope='session')
 def start_server(_proc, request, unused_port):
+    """Starts Redis server instance.
 
-    servers = {}
+    Caches instances by name.
+    ``name`` param -- instance alias
+    ``config_lines`` -- optional list of config directives to put in config
+        (if no config_lines passed -- no config will be generated,
+         for backward compatibility).
+    """
 
     version = _read_server_version(request.config)
 
-    def maker(name):
+    servers = {}
+
+    def maker(name, config_lines=None):
         if name in servers:
             return servers[name]
 
         port = unused_port()
         tcp_address = TCPAddress('localhost', port)
-        unixsocket = '/tmp/redis.{}.sock'.format(port)
+        unixsocket = '/tmp/aioredis.{}.sock'.format(port)
+        if config_lines:
+            config = '/tmp/aioreids.{}.conf'.format(port)
+            with config_writer(config) as write:
+                write('daemonize no')
+                write('save ""')
+                write('port', port)
+                write('unixsocket', unixsocket)
+                write('# extra config')
+                for line in config_lines:
+                    write(line)
+            args = [config]
+            tmp_files = [config]
+        else:
+            args = ['--daemonize', 'no',
+                    '--save', '""',
+                    '--port', str(port),
+                    '--unixsocket', unixsocket,
+                    ]
+            tmp_files = []
 
         proc = _proc(request.config.getoption('--redis-server'),
-                     '--daemonize', 'no',
-                     '--save', '""',
-                     '--port', str(port),
-                     '--unixsocket', unixsocket,
-                     stdout=subprocess.PIPE)
+                     *args,
+                     stdout=subprocess.PIPE,
+                     _clear_tmp_files=tmp_files)
         log = b''
         while b'The server is now ready to accept connections ' not in log:
             log = proc.stdout.readline()
@@ -194,11 +257,12 @@ def start_server(_proc, request, unused_port):
     return maker
 
 
-@pytest.yield_fixture(scope='session')
+@pytest.fixture(scope='session')
 def start_sentinel(_proc, request, unused_port, start_server):
-    sentinels = {}
-
+    """Starts Redis Sentinel instances."""
     version = _read_server_version(request.config)
+
+    sentinels = {}
 
     def timeout(t):
         end = time.time() + t
@@ -211,22 +275,23 @@ def start_sentinel(_proc, request, unused_port, start_server):
             return sentinels[key]
         port = unused_port()
         tcp_address = TCPAddress('localhost', port)
-        unixsocket = '/tmp/redis-sentinel.{}.sock'.format(port)
-        config = '/tmp/redis-sentinel.{}.conf'.format(port)
+        unixsocket = '/tmp/aioredis-sentinel.{}.sock'.format(port)
+        config = '/tmp/aioredis-sentinel.{}.conf'.format(port)
 
-        with open(config, 'wt') as f:
-            print('daemonize no', file=f)
-            print('save ""', file=f)
-            print('port {}'.format(port), file=f)
-            print('unixsocket {}'.format(unixsocket), file=f)
+        with config_writer(config) as write:
+            write('daemonize no')
+            write('save ""')
+            write('port', port)
+            write('unixsocket', unixsocket)
             for master in masters:
-                print('sentinel monitor {} 127.0.0.1 {} 2'
-                      .format(master.name, master.tcp_address.port), file=f)
+                write('sentinel monitor', master.name,
+                      '127.0.0.1', master.tcp_address.port, '2')
 
         proc = _proc(request.config.getoption('--redis-server'),
                      config,
                      '--sentinel',
-                     stdout=subprocess.PIPE)
+                     stdout=subprocess.PIPE,
+                     _clear_tmp_files=[config])
         for _ in timeout(3):
             log = proc.stdout.readline()
             if b'# +monitor master ' in log:
@@ -234,13 +299,11 @@ def start_sentinel(_proc, request, unused_port, start_server):
         else:
             raise RuntimeError("Could not start Sentinel")
 
-        info = RedisServer(name, tcp_address, unixsocket, version)
+        masters = {m.name: m for m in masters}
+        info = SentinelServer(name, tcp_address, unixsocket, version, masters)
         sentinels.setdefault(key, info)
         return info
-    yield maker
-
-    for info in sentinels.values():
-        os.remove('/tmp/redis-sentinel.{}.conf'.format(info.tcp_address.port))
+    return maker
 
 
 @pytest.fixture(scope='session')
@@ -284,10 +347,12 @@ def ssl_proxy(_proc, request, unused_port):
 @pytest.yield_fixture(scope='session')
 def _proc():
     processes = []
+    tmp_files = set()
 
-    def run(*commandline, **kwargs):
+    def run(*commandline, _clear_tmp_files=(), **kwargs):
         proc = subprocess.Popen(commandline, **kwargs)
         processes.append(proc)
+        tmp_files.update(_clear_tmp_files)
         return proc
 
     yield run
@@ -296,6 +361,8 @@ def _proc():
         proc = processes.pop(0)
         proc.terminate()
         proc.wait()
+    for path in tmp_files:
+        os.remove(path)
 
 
 @pytest.mark.tryfirst
