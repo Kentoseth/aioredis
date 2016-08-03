@@ -28,37 +28,41 @@ def test_sentinel_simple(sentinel, create_redis, loop):
 def test_sentinel_masters(sentinel, create_sentinel):
     redis_sentinel = yield from create_sentinel(sentinel.tcp_address)
 
-    res = yield from redis_sentinel.masters()
-    assert res == {
-        'masterA': {
-            'config-epoch': 0,
-            'down-after-milliseconds': 30000,
-            'failover-timeout': 180000,
-            'flags': 'master',
-            'info-refresh': mock.ANY,
-            'ip': '127.0.0.1',
-            'is_disconnected': False,       # XXX: mixing "_" and "-"
-            'is_master': True,
-            'is_master_down': False,
-            'is_odown': False,
-            'is_sdown': False,
-            'is_sentinel': False,
-            'is_slave': False,              # make it enum?
-            'last-ok-ping-reply': mock.ANY,
-            'last-ping-reply': mock.ANY,
-            'last-ping-sent': mock.ANY,
-            'name': 'masterA',
-            'num-other-sentinels': 0,
-            'num-slaves': 1,
-            'parallel-syncs': 1,
-            'pending-commands': 0,
-            'port': sentinel.masters['masterA'].tcp_address.port,
-            'quorum': 2,
-            'role-reported': 'master',
-            'role-reported-time': mock.ANY,
-            'runid': mock.ANY,
-            }
+    info = {
+        'config-epoch': 0,
+        'down-after-milliseconds': 30000,
+        'failover-timeout': 180000,
+        'flags': 'master',
+        'info-refresh': mock.ANY,
+        'ip': '127.0.0.1',
+        'is_disconnected': False,       # XXX: mixing "_" and "-"
+        'is_master': True,
+        'is_master_down': False,
+        'is_odown': False,
+        'is_sdown': False,
+        'is_sentinel': False,
+        'is_slave': False,              # make it enum?
+        'last-ok-ping-reply': mock.ANY,
+        'last-ping-reply': mock.ANY,
+        'last-ping-sent': mock.ANY,
+        'name': 'masterA',
+        'num-other-sentinels': 0,
+        'num-slaves': 1,
+        'parallel-syncs': 1,
+        'port': sentinel.masters['masterA'].tcp_address.port,
+        'quorum': 2,
+        'role-reported': 'master',
+        'role-reported-time': mock.ANY,
+        'runid': mock.ANY,
         }
+    if sentinel.version < (3, 2, 0):
+        info['pending-commands'] = 0
+    else:
+        info['link-pending-commands'] = 0
+        info['link-refcount'] = mock.ANY
+
+    res = yield from redis_sentinel.masters()
+    assert res == {'masterA': info}
 
 
 @pytest.mark.xfail(reason="Not ported to pytest")
@@ -207,10 +211,15 @@ def test_get_master_info(sentinel, create_sentinel):
               'config-epoch', 'parallel-syncs', 'role-reported-time',
               'is_sentinel', 'last-ok-ping-reply',
               'last-ping-reply', 'last-ping-sent', 'is_sdown', 'is_master',
-              'name', 'pending-commands', 'down-after-milliseconds',
+              'name',  'down-after-milliseconds',
               'is_slave', 'num-slaves', 'port', 'is_disconnected',
               'role-reported']:
         assert k in master
+    if sentinel.version < (3, 2, 0):
+        assert 'pending-commands' in master
+    else:
+        assert 'link-pending-commands' in master
+        assert 'link-refcount' in master
 
 
 @pytest.mark.run_loop
@@ -227,9 +236,14 @@ def test_get_slave_info(sentinel, create_sentinel):
               'role-reported-time',
               'is_sentinel', 'last-ok-ping-reply',
               'last-ping-reply', 'last-ping-sent', 'is_sdown', 'is_master',
-              'name', 'pending-commands', 'down-after-milliseconds',
+              'name', 'down-after-milliseconds',
               'is_slave', 'port', 'is_disconnected', 'role-reported']:
         assert k in info, k
+    if sentinel.version < (3, 2, 0):
+        assert 'pending-commands' in info
+    else:
+        assert 'link-pending-commands' in info
+        assert 'link-refcount' in info
 
 
 @pytest.mark.run_loop
