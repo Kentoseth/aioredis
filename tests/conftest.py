@@ -162,6 +162,7 @@ def sentinel(start_sentinel, start_server):
         'slaveof 127.0.0.1 {}'.format(masterA.tcp_address.port),
         'slave-read-only yes',
         ])
+    time.sleep(3)
     return start_sentinel('main', masterA)
 
 
