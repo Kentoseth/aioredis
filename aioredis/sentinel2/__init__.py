@@ -1,3 +1,4 @@
+from ..util import wait_ok
 from .parser import (
     parse_sentinel_masters,
     parse_sentinel_get_master,
@@ -53,9 +54,13 @@ class RedisSentinel:
 
     def monitor(self, name, ip, port, quorum):
         """Add a new master to Sentinel to be monitored"""
+        fut = self.execute(b'MONITOR', name, ip, port, quorum)
+        return wait_ok(fut)
 
     def remove(self, name):
         """Remove a master from Sentinel's monitoring"""
+        fut = self.execute(b'REMOVE', name)
+        return wait_ok(fut)
 
     def set(self, name, option, value):
         """Set Sentinel monitoring parameters for a given master"""

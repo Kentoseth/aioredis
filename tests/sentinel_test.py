@@ -250,8 +250,9 @@ def test_get_slave_info(sentinel, create_sentinel):
 def test_get_sentinel_info(sentinel, create_sentinel):
     redis_sentinel = yield from create_sentinel(sentinel.tcp_address)
 
-    sentinel = yield from redis_sentinel.sentinels('masterA')
-    assert len(sentinel) == 0
+    # no other sentinels
+    info = yield from redis_sentinel.sentinels('masterA')
+    assert len(info) == 0
 
     with pytest.raises(ReplyError):
         yield from redis_sentinel.sentinels('bad_master')
@@ -276,18 +277,28 @@ def test_get_sentinel_set():
     assert master[master_name]['failover-timeout'] == 1100
 
 
-@pytest.mark.xfail(reason="Not ported to pytest")
 @pytest.mark.run_loop
-def test_get_sentinel_monitor():
-    sentinel_connection = redis_sentinel.get_sentinel_connection(0)
-    master = yield from sentinel_connection.sentinel_masters()
-    if len(master):
-        if 'mymaster2' in master:
-            resp = yield from sentinel_connection.sentinel_remove('mymaster2')
-            assert resp is True
-    resp = yield from sentinel_connection.sentinel_monitor('mymaster2',
-                                                           '127.0.0.1',
-                                                           6380, 2)
-    assert resp is True
-    resp = yield from sentinel_connection.sentinel_remove('mymaster2')
-    assert resp is True
+def test_get_sentinel_monitor(sentinel, create_sentinel, start_server):
+    redis_sentinel = yield from create_sentinel(sentinel.tcp_address)
+
+    masters = yield from redis_sentinel.masters()
+    assert len(masters) == 1
+    assert 'masterA' in masters
+
+    masterB = start_server('masterB')
+
+    ok = yield from redis_sentinel.monitor('masterB', '127.0.0.1',
+                                           masterB.tcp_address.port, 2)
+    assert ok is True
+
+    masters = yield from redis_sentinel.masters()
+    assert len(masters) == 2
+    assert 'masterA' in masters
+    assert 'masterB' in masters
+
+    ok = yield from redis_sentinel.remove('masterB')
+    assert ok is True
+
+    masters = yield from redis_sentinel.masters()
+    assert len(masters) == 1
+    assert 'masterA' in masters
