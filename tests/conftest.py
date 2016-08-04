@@ -180,6 +180,32 @@ def pytest_addoption(parser):
                      help="Run tests with uvloop")
 
 
+@pytest.mark.trylast
+def pytest_terminal_summary(terminalreporter):
+    if os.environ.get('TRAVIS'):
+        if bool(terminalreporter.config.getoption('--cov', False)):
+            print("\ntravis_fold:end:coverage")
+
+
+def _headline(title):
+    return "\033[33;1m{}{:=<15}{}\033[0m".format(
+        "=" * 20, " {} ".format(title), "=" * 20)
+
+
+def pytest_sessionstart(session):
+    if os.environ.get('TRAVIS'):
+        print("\ntravis_fold:start:tests")
+        print(_headline("Tests"))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if os.environ.get('TRAVIS'):
+        print("\ntravis_fold:end:tests")
+        if bool(session.config.getoption('--cov', False)):
+            print("travis_fold:start:coverage")
+            print(_headline("Coverage"))
+
+
 def _read_server_version(config):
     args = [config.getoption('--redis-server'), '--version']
     with subprocess.Popen(args, stdout=subprocess.PIPE) as proc:
