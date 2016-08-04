@@ -1,3 +1,5 @@
+import asyncio
+
 from ..util import wait_ok
 from .parser import (
     parse_sentinel_masters,
@@ -11,7 +13,22 @@ class RedisSentinel:
     """Redis sentinel client."""
 
     def __init__(self, pool):
+        # What I need in here -- special Pool controlling Sentinels
         self._pool = pool
+
+    def close(self):
+        """Close client connections."""
+        self._pool.close()
+
+    @asyncio.coroutine
+    def wait_closed(self):
+        """Coroutine waiting until underlying connections are closed."""
+        yield from self._pool.wait_closed()
+
+    @property
+    def closed(self):
+        """True if connection is closed."""
+        return self._pool.closed
 
     def get_master(self, name):
         """Returns Redis client to master Redis server."""
@@ -69,4 +86,10 @@ class RedisSentinel:
         """Force a failover of a named master."""
 
     def check_quorum(self, name):
-        """ """
+        """
+        Check if the current Sentinel configuration is able
+        to reach the quorum needed to failover a master,
+        and the majority needed to authorize the failover.
+        """
+        fut = self.execute(b'CKQUORUM', name)
+        return fut

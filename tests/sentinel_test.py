@@ -247,7 +247,8 @@ def test_get_slave_info(sentinel, create_sentinel):
 
 
 @pytest.mark.run_loop
-def test_get_sentinel_info(sentinel, create_sentinel):
+def test_sentinels(sentinel, create_sentinel,
+                   start_sentinel, start_server, loop):
     redis_sentinel = yield from create_sentinel(sentinel.tcp_address)
 
     # no other sentinels
@@ -256,6 +257,18 @@ def test_get_sentinel_info(sentinel, create_sentinel):
 
     with pytest.raises(ReplyError):
         yield from redis_sentinel.sentinels('bad_master')
+
+    # another sentinel
+    sentinel2 = start_sentinel('sentinelB', start_server('masterA'))
+    yield from asyncio.sleep(3, loop=loop)
+
+    info = yield from redis_sentinel.sentinels('masterA')
+    assert len(info) == 1
+    assert info[0]['is_sentinel'] is True
+    assert info[0]['port'] == sentinel2.tcp_address.port
+
+    redis_sentinel2 = yield from create_sentinel(sentinel2.tcp_address)
+    yield from redis_sentinel2.remove('masterA')
 
 
 @pytest.mark.xfail(reason="Not ported to pytest")
@@ -278,7 +291,7 @@ def test_get_sentinel_set():
 
 
 @pytest.mark.run_loop
-def test_get_sentinel_monitor(sentinel, create_sentinel, start_server):
+def test_sentinel_monitor(sentinel, create_sentinel, start_server):
     redis_sentinel = yield from create_sentinel(sentinel.tcp_address)
 
     masters = yield from redis_sentinel.masters()
@@ -302,3 +315,11 @@ def test_get_sentinel_monitor(sentinel, create_sentinel, start_server):
     masters = yield from redis_sentinel.masters()
     assert len(masters) == 1
     assert 'masterA' in masters
+
+
+@pytest.mark.run_loop
+def test_sentinel_ckquorum(sentinel, create_sentinel):
+    redis_sentinel = yield from create_sentinel(sentinel.tcp_address)
+
+    ok = yield from redis_sentinel.check_quorum('masterA')
+    assert ok

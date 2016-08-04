@@ -43,10 +43,12 @@ class Redis(GenericCommandsMixin, StringCommandsMixin,
         return self._pool_or_conn.execute(command, *args, **kwargs)
 
     def close(self):
+        """Close client connections."""
         self._pool_or_conn.close()
 
     @asyncio.coroutine
     def wait_closed(self):
+        """Coroutine waiting until underlying connections are closed."""
         yield from self._pool_or_conn.wait_closed()
 
     @property
