@@ -161,6 +161,7 @@ class RedisConnection:
 
     def _process_data(self, obj):
         """Processes command results."""
+        assert len(self._waiters) > 0, (type(obj), obj)
         waiter, encoding, cb = self._waiters.popleft()
         if isinstance(obj, RedisError):
             if isinstance(obj, ReplyError):
